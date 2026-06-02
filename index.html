@@ -113,6 +113,7 @@ function App() {
   const [mVIP,setMVIP]=useState(false);
   const [mAdded,setMAdded]=useState(false);
   const [gMsg,setGMsg]=useState("");
+  const [expandedGuest,setExpandedGuest]=useState(null);
 
   const [sName,setSName]=useState("");
   const [sPin,setSPin]=useState("");
@@ -147,7 +148,7 @@ function App() {
     const entry={id:`ci-${Date.now()}`,guestId:guest.id,guestName:guest.name,day:config.currentDay,timestamp:new Date().toISOString()};
     const updated=[...checkins,entry];
     setCheckins(updated); await fbSet('checkins',updated);
-    setFlash(true); setTimeout(()=>setFlash(false),1400);
+    setJustCheckedIn(guest.id); setTimeout(()=>setJustCheckedIn(null),3000);
   }
   async function undoCI(guest){
     const updated=checkins.filter(c=>!(c.guestId===guest.id&&c.day===config.currentDay));
@@ -165,7 +166,17 @@ function App() {
         if(ok(row.Day1??row.day1??row["Day 1"]))days.push(1);
         if(ok(row.Day2??row.day2??row["Day 2"]))days.push(2);
         if(ok(row.Day3??row.day3??row["Day 3"]))days.push(3);
-        return{id:`g-${Date.now()}-${i}`,name,days,isVIP:ok(row.VIP??row.vip),notes:(row.Notes??row.notes??"").trim()};
+        const backstage=[
+          ok(row.Backstage1??row.backstage1??row["Backstage 1"]),
+          ok(row.Backstage2??row.backstage2??row["Backstage 2"]),
+          ok(row.Backstage3??row.backstage3??row["Backstage 3"]),
+        ];
+        const early=[
+          ok(row.Early1??row.early1??row["Early 1"]),
+          ok(row.Early2??row.early2??row["Early 2"]),
+          ok(row.Early3??row.early3??row["Early 3"]),
+        ];
+        return{id:`g-${Date.now()}-${i}`,name,days,isVIP:ok(row.VIP??row.vip),backstage,early,notes:(row.Notes??row.notes??"").trim()};
       }).filter(Boolean);
       const updated=[...(append?guests:[]),...parsed];
       await fbSet('guests',updated);
@@ -176,7 +187,7 @@ function App() {
 
   async function addManual(){
     if(!mName.trim())return;
-    const g={id:`g-${Date.now()}`,name:mName.trim(),days:mDays,isVIP:mVIP,notes:""};
+    const g={id:`g-${Date.now()}`,name:mName.trim(),days:mDays,isVIP:mVIP,backstage:[false,false,false],early:[false,false,false],notes:""};
     await fbSet('guests',[...guests,g]);
     setMName("");setMDays([]);setMVIP(false);
     setMAdded(true);setTimeout(()=>setMAdded(false),2000);
@@ -184,6 +195,13 @@ function App() {
 
   async function saveConfig(updates){
     const nc={...config,...updates}; setConfig(nc); await fbSet('config',nc);
+  }
+
+  async function toggleAccess(guest, type, dayIdx){
+    const arr=[...(guest[type]||[false,false,false])];
+    arr[dayIdx]=!arr[dayIdx];
+    const updated=guests.map(g=>g.id===guest.id?{...g,[type]:arr}:g);
+    await fbSet('guests',updated);
   }
 
   async function finishSetup(){
@@ -237,7 +255,7 @@ function App() {
         <div style={S.card({marginBottom:20})}>
           <div style={S.label}>Upload guest list</div>
           <div style={{fontSize:11,color:C.muted,marginBottom:10,lineHeight:1.6}}>
-            CSV columns: <span style={{color:C.green,fontFamily:"monospace"}}>Name, Day1, Day2, Day3, VIP, Notes</span><br/>
+            CSV columns: <span style={{color:C.green,fontFamily:"monospace"}}>Name, Day1, Day2, Day3, VIP, Backstage1, Backstage2, Backstage3, Early1, Early2, Early3, Notes</span><br/>
             Use <span style={{fontFamily:"monospace"}}>yes</span> or <span style={{fontFamily:"monospace"}}>1</span> in day/VIP columns.
           </div>
           <input ref={csvRef} type="file" accept=".csv" style={{display:"none"}} onChange={e=>{if(e.target.files[0]){parseCSV(e.target.files[0],false);e.target.value="";}}} />
@@ -382,6 +400,62 @@ function App() {
                 <span style={{color:C.gold,fontFamily:"monospace",fontSize:14}}>{guests.filter(g=>g.isVIP).length}</span>
               </div>
             </div>
+            <div style={{marginTop:14}}>
+              <div style={{fontSize:10,color:C.muted,letterSpacing:2,fontFamily:"monospace",marginBottom:8}}>GUEST ACCESS EDITOR</div>
+              <div style={{fontSize:11,color:C.hint,marginBottom:10}}>Tap a guest to toggle backstage / early morning access per day.</div>
+              {guests.length===0&&<div style={{textAlign:"center",color:C.hint,padding:"20px 0",fontFamily:"monospace",fontSize:12}}>No guests loaded</div>}
+              {guests.map(g=>{
+                const isExp=expandedGuest===g.id;
+                return(
+                  <div key={g.id} style={{marginBottom:8}}>
+                    <button onClick={()=>setExpandedGuest(isExp?null:g.id)}
+                      style={{width:"100%",textAlign:"left",background:isExp?C.surfaceUp:C.surface,border:`1px solid ${isExp?C.bdrUp:C.bdr}`,borderRadius:isExp?"12px 12px 0 0":12,padding:"10px 14px",cursor:"pointer",fontFamily:"inherit",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div>
+                        <span style={{color:C.text,fontWeight:600,fontSize:14}}>{g.name}</span>
+                        {g.isVIP&&<span style={{marginLeft:8,fontSize:10,color:C.gold,fontFamily:"monospace"}}>VIP</span>}
+                        <div style={{display:"flex",gap:5,marginTop:4}}>
+                          {[0,1,2].map(di=>{
+                            const hasBS=g.backstage&&g.backstage[di];
+                            const hasEA=g.early&&g.early[di];
+                            if(!hasBS&&!hasEA)return null;
+                            return(
+                              <span key={di} style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:C.surfaceUp,color:C.muted,fontFamily:"monospace"}}>
+                                D{di+1}{hasBS?"🎭":""}{hasEA?"🌅":""}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <span style={{color:C.muted,fontSize:16}}>{isExp?"▲":"▼"}</span>
+                    </button>
+                    {isExp&&(
+                      <div style={{background:C.surfaceUp,border:`1px solid ${C.bdrUp}`,borderTop:"none",borderRadius:"0 0 12px 12px",padding:"10px 14px"}}>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+                          {[0,1,2].map(di=>{
+                            const hasDay=g.isVIP||(Array.isArray(g.days)&&g.days.includes(di+1));
+                            const hasBS=g.backstage&&g.backstage[di];
+                            const hasEA=g.early&&g.early[di];
+                            return(
+                              <div key={di} style={{background:C.surface,borderRadius:10,padding:"10px 8px",border:`1px solid ${C.bdr}`}}>
+                                <div style={{fontSize:10,color:hasDay?C.blue:C.hint,fontFamily:"monospace",letterSpacing:1,marginBottom:8,textAlign:"center"}}>DAY {di+1}{!hasDay&&" (no access)"}</div>
+                                <button onClick={()=>toggleAccess(g,"backstage",di)}
+                                  style={{width:"100%",padding:"8px 4px",borderRadius:8,border:`2px solid ${hasBS?"#aa44ff":"#3a3a6a"}`,background:hasBS?"#1a0a2e":C.surface,color:hasBS?"#cc88ff":C.hint,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",letterSpacing:.5,marginBottom:6,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+                                  <span>🎭</span>{hasBS?"BACKSTAGE ✓":"BACKSTAGE"}
+                                </button>
+                                <button onClick={()=>toggleAccess(g,"early",di)}
+                                  style={{width:"100%",padding:"8px 4px",borderRadius:8,border:`2px solid ${hasEA?"#44aaff":"#3a3a6a"}`,background:hasEA?"#0a1a2e":C.surface,color:hasEA?"#88ccff":C.hint,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",letterSpacing:.5,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+                                  <span>🌅</span>{hasEA?"EARLY ✓":"EARLY"}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>}
 
           {tab==="settings"&&<div style={{display:"flex",flexDirection:"column",gap:12}}>
@@ -462,6 +536,29 @@ function App() {
                 <span style={{color:C.gold,fontSize:11,fontWeight:700,letterSpacing:2,fontFamily:"monospace"}}>VIP — ALL DAYS ACCESS</span>
               </div>
             )}
+            {/* Backstage / Early access badges for current day */}
+            {(()=>{
+              const dayIdx=config.currentDay-1;
+              const hasBS=selected.backstage&&selected.backstage[dayIdx];
+              const hasEA=selected.early&&selected.early[dayIdx];
+              if(!hasBS&&!hasEA)return null;
+              return(
+                <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+                  {hasBS&&(
+                    <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"#1a0a2e",border:"2px solid #aa44ff",borderRadius:8,padding:"5px 12px"}}>
+                      <span style={{fontSize:14}}>🎭</span>
+                      <span style={{color:"#cc88ff",fontSize:12,fontWeight:700,letterSpacing:2,fontFamily:"monospace"}}>BACKSTAGE ACCESS</span>
+                    </div>
+                  )}
+                  {hasEA&&(
+                    <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"#0a1a2e",border:"2px solid #44aaff",borderRadius:8,padding:"5px 12px"}}>
+                      <span style={{fontSize:14}}>🌅</span>
+                      <span style={{color:"#88ccff",fontSize:12,fontWeight:700,letterSpacing:2,fontFamily:"monospace"}}>EARLY ACCESS</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <div style={{fontSize:24,fontWeight:700,paddingRight:30,marginBottom:selected.notes?4:12}}>{selected.name}</div>
             {selected.notes&&<div style={{fontSize:12,color:C.muted,marginBottom:12}}>{selected.notes}</div>}
             <div style={{display:"flex",gap:7,marginBottom:14}}>
