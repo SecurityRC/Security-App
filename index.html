@@ -111,6 +111,8 @@ function App() {
   const [mName,setMName]=useState("");
   const [mDays,setMDays]=useState([]);
   const [mVIP,setMVIP]=useState(false);
+  const [mBackstage,setMBackstage]=useState([false,false,false]);
+  const [mEarly,setMEarly]=useState([false,false,false]);
   const [mAdded,setMAdded]=useState(false);
   const [gMsg,setGMsg]=useState("");
   const [expandedGuest,setExpandedGuest]=useState(null);
@@ -187,9 +189,9 @@ function App() {
 
   async function addManual(){
     if(!mName.trim())return;
-    const g={id:`g-${Date.now()}`,name:mName.trim(),days:mDays,isVIP:mVIP,backstage:[false,false,false],early:[false,false,false],notes:""};
+    const g={id:`g-${Date.now()}`,name:mName.trim(),days:mDays,isVIP:mVIP,backstage:[...mBackstage],early:[...mEarly],notes:""};
     await fbSet('guests',[...guests,g]);
-    setMName("");setMDays([]);setMVIP(false);
+    setMName("");setMDays([]);setMVIP(false);setMBackstage([false,false,false]);setMEarly([false,false,false]);
     setMAdded(true);setTimeout(()=>setMAdded(false),2000);
   }
 
@@ -380,6 +382,22 @@ function App() {
               <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
                 <input type="checkbox" id="mvip" checked={mVIP} onChange={e=>setMVIP(e.target.checked)} style={{width:16,height:16,accentColor:C.gold}} />
                 <label htmlFor="mvip" style={{color:C.gold,fontSize:13,cursor:"pointer"}}>⭐ VIP — All Days Access</label>
+              </div>
+              <div style={{fontSize:10,color:C.muted,letterSpacing:2,fontFamily:"monospace",marginBottom:8}}>ACCESS PER DAY</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:12}}>
+                {[0,1,2].map(di=>(
+                  <div key={di} style={{background:C.surface,border:`1px solid ${C.bdr}`,borderRadius:10,padding:"8px 6px"}}>
+                    <div style={{fontSize:10,color:C.muted,fontFamily:"monospace",textAlign:"center",marginBottom:6}}>DAY {di+1}</div>
+                    <button onClick={()=>setMBackstage(p=>{const a=[...p];a[di]=!a[di];return a;})}
+                      style={{width:"100%",padding:"6px 2px",borderRadius:7,border:`2px solid ${mBackstage[di]?"#aa44ff":"#3a3a6a"}`,background:mBackstage[di]?"#1a0a2e":C.surface,color:mBackstage[di]?"#cc88ff":C.hint,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:"monospace",marginBottom:4,display:"flex",alignItems:"center",justifyContent:"center",gap:3}}>
+                      🎭 {mBackstage[di]?"BS ✓":"Backstage"}
+                    </button>
+                    <button onClick={()=>setMEarly(p=>{const a=[...p];a[di]=!a[di];return a;})}
+                      style={{width:"100%",padding:"6px 2px",borderRadius:7,border:`2px solid ${mEarly[di]?"#44aaff":"#3a3a6a"}`,background:mEarly[di]?"#0a1a2e":C.surface,color:mEarly[di]?"#88ccff":C.hint,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:"monospace",display:"flex",alignItems:"center",justifyContent:"center",gap:3}}>
+                      🌅 {mEarly[di]?"Early ✓":"Early"}
+                    </button>
+                  </div>
+                ))}
               </div>
               <button style={S.btn(mAdded?"#005a30":C.green)} onClick={addManual} disabled={!mName.trim()}>
                 {mAdded?"✓ Added!":"+ Add Guest"}
