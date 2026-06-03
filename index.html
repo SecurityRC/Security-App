@@ -67,7 +67,7 @@ if ('serviceWorker' in navigator) {
 
 <script type="text/babel">
 const { useState, useEffect, useRef } = React;
-const DEFAULT_CONFIG = { adminPin:"1234", currentDay:1, eventName:"My Event", setupDone:false };
+const DEFAULT_CONFIG = { adminPin:"1234", overseerPin:"5678", currentDay:1, eventName:"My Event", setupDone:false };
 
 const C = {
   green:"#00e87a", greenDim:"#003d20", greenBdr:"#00703a",
@@ -102,10 +102,12 @@ function App() {
   const [justCheckedIn,setJustCheckedIn]=useState(null);
 
   const [authed,setAuthed]=useState(false);
+  const [role,setRole]=useState("super"); // "super" or "overseer"
   const [pin,setPin]=useState("");
   const [pinErr,setPinErr]=useState(false);
   const [tab,setTab]=useState("live");
   const [newPin,setNewPin]=useState("");
+  const [newOverseerPin,setNewOverseerPin]=useState("");
   const [pinSaved,setPinSaved]=useState(false);
 
   const [mName,setMName]=useState("");
@@ -196,7 +198,8 @@ function App() {
   }
 
   async function saveConfig(updates){
-    const nc={...config,...updates}; setConfig(nc); await fbSet('config',nc);
+    const nc={...config,...updates}; setConfig(nc);
+    await db.ref(ROOT+'/config').update(updates);
   }
 
   async function toggleAccess(guest, type, dayIdx){
@@ -284,20 +287,25 @@ function App() {
 
   // ── ADMIN ───────────────────────────────────────────────────────────────────
   if(screen==="admin"){
+    function tryPin(){
+      if(pin===config.adminPin){setAuthed(true);setRole("super");setPin("");}
+      else if(pin===(config.overseerPin||"5678")){setAuthed(true);setRole("overseer");setPin("");}
+      else{setPinErr(true);setPin("");}
+    }
     if(!authed) return(
       <div style={{...page,alignItems:"center",justifyContent:"center",padding:20}}>
         <div style={{width:"100%",maxWidth:320,textAlign:"center"}}>
           <div style={{fontSize:32,marginBottom:12}}>🔐</div>
           <div style={{fontSize:20,fontWeight:700,marginBottom:4}}>Admin Access</div>
-          <div style={{fontSize:13,color:C.muted,marginBottom:22}}>Enter your admin PIN</div>
+          <div style={{fontSize:13,color:C.muted,marginBottom:22}}>Enter your PIN</div>
           <input type="password" autoFocus placeholder="••••"
             style={S.input({textAlign:"center",fontSize:26,letterSpacing:8,borderColor:pinErr?C.red:C.bdrUp})}
             value={pin} onChange={e=>{setPin(e.target.value);setPinErr(false);}}
-            onKeyDown={e=>{if(e.key==="Enter"){if(pin===config.adminPin){setAuthed(true);setPin("");}else{setPinErr(true);setPin("");};}}} />
+            onKeyDown={e=>{if(e.key==="Enter")tryPin();}} />
           {pinErr&&<div style={{color:C.red,fontSize:12,fontFamily:"monospace",marginBottom:12,marginTop:-6}}>INCORRECT PIN</div>}
           <div style={{display:"flex",gap:10}}>
             <button style={{...S.ghost(),flex:1}} onClick={()=>{setScreen("guard");setPin("");setPinErr(false);}}>Cancel</button>
-            <button style={{...S.btn(),flex:1}} onClick={()=>{if(pin===config.adminPin){setAuthed(true);setPin("");}else{setPinErr(true);setPin("");}}}>Enter</button>
+            <button style={{...S.btn(),flex:1}} onClick={tryPin}>Enter</button>
           </div>
         </div>
       </div>
@@ -308,17 +316,21 @@ function App() {
       <div style={page}>
         <div style={{background:C.surface,borderBottom:`1px solid ${C.bdr}`,padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div>
-            <div style={{fontSize:10,color:C.muted,letterSpacing:2,fontFamily:"monospace"}}>ADMIN — {config.eventName.toUpperCase()}</div>
-            <div style={{fontSize:17,fontWeight:700}}>Dashboard</div>
+            <div style={{fontSize:10,color:C.muted,letterSpacing:2,fontFamily:"monospace"}}>
+              {role==="super"?"SUPER ADMIN":"OVERSEER"} — {config.eventName.toUpperCase()}
+            </div>
+            <div style={{fontSize:17,fontWeight:700}}>Dashboard
+              {role==="overseer"&&<span style={{marginLeft:8,fontSize:10,color:C.orange,fontFamily:"monospace",letterSpacing:1,verticalAlign:"middle"}}>LIMITED ACCESS</span>}
+            </div>
           </div>
-          <button style={S.ghost(true)} onClick={()=>{setScreen("guard");setAuthed(false);}}>← Guard view</button>
+          <button style={S.ghost(true)} onClick={()=>{setScreen("guard");setAuthed(false);setRole("super");}}>← Guard view</button>
         </div>
         <div style={{background:C.surface,padding:"10px 16px",borderBottom:`1px solid ${C.bdr}`,display:"flex",gap:8,alignItems:"center"}}>
           <div style={{fontSize:10,color:C.muted,letterSpacing:2,fontFamily:"monospace",marginRight:4}}>ACTIVE DAY:</div>
           {[1,2,3].map(d=><button key={d} style={{...S.dayBtn(config.currentDay===d),flex:1}} onClick={()=>saveConfig({currentDay:d})}>DAY {d}</button>)}
         </div>
         <div style={{display:"flex",background:C.surface,borderBottom:`1px solid ${C.bdr}`}}>
-          {[["live","📡 Live"],["guests","👥 Guests"],["settings","⚙️ Settings"]].map(([id,lbl])=>(
+          {[["live","📡 Live"],["guests","👥 Guests"],...(role==="super"?[["settings","⚙️ Settings"]]:[])].map(([id,lbl])=>(
             <button key={id} style={S.tab(tab===id)} onClick={()=>setTab(id)}>{lbl}</button>
           ))}
         </div>
@@ -369,7 +381,7 @@ function App() {
               <div style={{display:"flex",gap:8}}>
                 <input ref={aCsvRef} type="file" accept=".csv" style={{display:"none"}} onChange={e=>{if(e.target.files[0]){parseCSV(e.target.files[0],true);e.target.value="";}}} />
                 <button style={S.ghost(true)} onClick={()=>aCsvRef.current?.click()}>+ CSV</button>
-                <button style={{...S.ghost(true),color:C.red,borderColor:C.redBdr}} onClick={async()=>{if(window.confirm("Clear ALL guests and check-ins?")){await fbSet('guests',[]);await fbSet('checkins',[]);}}}>Clear</button>
+                {role==="super"&&<button style={{...S.ghost(true),color:C.red,borderColor:C.redBdr}} onClick={async()=>{if(window.confirm("Clear ALL guests and check-ins?")){await fbSet('guests',[]);await fbSet('checkins',[]);}}}>Clear</button>}
               </div>
             </div>
             {gMsg&&<div style={{color:C.green,fontFamily:"monospace",fontSize:13,marginBottom:10}}>{gMsg}</div>}
@@ -418,7 +430,7 @@ function App() {
                 <span style={{color:C.gold,fontFamily:"monospace",fontSize:14}}>{guests.filter(g=>g.isVIP).length}</span>
               </div>
             </div>
-            <div style={{marginTop:14}}>
+            {role==="super"&&<div style={{marginTop:14}}>
               <div style={{fontSize:10,color:C.muted,letterSpacing:2,fontFamily:"monospace",marginBottom:8}}>GUEST ACCESS EDITOR</div>
               <div style={{fontSize:11,color:C.hint,marginBottom:10}}>Tap a guest to toggle backstage / early morning access per day.</div>
               {guests.length===0&&<div style={{textAlign:"center",color:C.hint,padding:"20px 0",fontFamily:"monospace",fontSize:12}}>No guests loaded</div>}
@@ -473,7 +485,7 @@ function App() {
                   </div>
                 );
               })}
-            </div>
+            </div>}
           </div>}
 
           {tab==="settings"&&<div style={{display:"flex",flexDirection:"column",gap:12}}>
@@ -482,12 +494,25 @@ function App() {
               <input style={S.input({marginBottom:0})} value={config.eventName} onChange={e=>saveConfig({eventName:e.target.value})} />
             </div>
             <div style={S.card()}>
-              <div style={S.label}>Change admin PIN</div>
+              <div style={S.label}>Change super admin PIN</div>
               <div style={{display:"flex",gap:8}}>
                 <input style={{...S.input({marginBottom:0,flex:1,letterSpacing:4})}} type="password" placeholder="New PIN" value={newPin} onChange={e=>{setNewPin(e.target.value);setPinSaved(false);}} />
                 <button style={{...S.btn(),width:"auto",padding:"10px 16px",borderRadius:10}} onClick={()=>{if(newPin){saveConfig({adminPin:newPin});setNewPin("");setPinSaved(true);}}}>
                   {pinSaved?"✓":"Save"}
                 </button>
+              </div>
+            </div>
+            <div style={S.card()}>
+              <div style={S.label}>Change overseer PIN</div>
+              <div style={{fontSize:12,color:C.muted,marginBottom:8}}>Share this PIN with your overseers — gives limited dashboard access</div>
+              <div style={{display:"flex",gap:8}}>
+                <input style={{...S.input({marginBottom:0,flex:1,letterSpacing:4})}} type="password" placeholder="New overseer PIN" value={newOverseerPin} onChange={e=>{setNewOverseerPin(e.target.value);setPinSaved(false);}} />
+                <button style={{...S.btn(C.orange,"#000"),width:"auto",padding:"10px 16px",borderRadius:10}} onClick={()=>{if(newOverseerPin){saveConfig({overseerPin:newOverseerPin});setNewOverseerPin("");setPinSaved(true);}}}>
+                  {pinSaved?"✓":"Save"}
+                </button>
+              </div>
+              <div style={{marginTop:10,padding:"8px 12px",background:C.surfaceUp,borderRadius:8,fontSize:12,color:C.muted}}>
+                Current overseer PIN: <span style={{color:C.orange,fontFamily:"monospace",letterSpacing:2}}>{config.overseerPin||"5678"}</span>
               </div>
             </div>
             <div style={S.card()}>
