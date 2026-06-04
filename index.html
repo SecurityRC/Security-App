@@ -101,6 +101,13 @@ function App() {
   const [selected,setSelected]=useState(null);
   const [justCheckedIn,setJustCheckedIn]=useState(null);
 
+  // Override flow state
+  const [ovrOpen,setOvrOpen]=useState(false);
+  const [ovrStep,setOvrStep]=useState("pin"); // "pin" -> "reason"
+  const [ovrPin,setOvrPin]=useState("");
+  const [ovrPinErr,setOvrPinErr]=useState(false);
+  const [ovrRole,setOvrRole]=useState(null); // "super" | "overseer"
+
   const [authed,setAuthed]=useState(false);
   const [role,setRole]=useState("super"); // "super" or "overseer"
   const [pin,setPin]=useState("");
@@ -153,6 +160,38 @@ function App() {
     const updated=[...checkins,entry];
     setCheckins(updated); await fbSet('checkins',updated);
     setJustCheckedIn(guest.id); setTimeout(()=>setJustCheckedIn(null),3000);
+  }
+  function verifyOvrPin(p){
+    if(p===config.adminPin) return "super";
+    if(p===(config.overseerPin||"5678")) return "overseer";
+    return null;
+  }
+  function openOverride(){
+    setOvrOpen(true); setOvrStep("pin"); setOvrPin(""); setOvrPinErr(false); setOvrRole(null);
+  }
+  function closeOverride(){
+    setOvrOpen(false); setOvrStep("pin"); setOvrPin(""); setOvrPinErr(false); setOvrRole(null);
+  }
+  function submitOvrPin(){
+    const r=verifyOvrPin(ovrPin);
+    if(r){ setOvrRole(r); setOvrStep("reason"); setOvrPinErr(false); }
+    else { setOvrPinErr(true); setOvrPin(""); }
+  }
+  async function overrideCheckIn(guest,reason){
+    const entry={
+      id:`ci-${Date.now()}`,
+      guestId:guest.id,
+      guestName:guest.name,
+      day:config.currentDay,
+      timestamp:new Date().toISOString(),
+      override:true,
+      overrideReason:reason, // "spouse" | "oversight"
+      overrideBy:ovrRole,    // "super" | "overseer"
+    };
+    const updated=[...checkins,entry];
+    setCheckins(updated); await fbSet('checkins',updated);
+    setJustCheckedIn(guest.id); setTimeout(()=>setJustCheckedIn(null),3000);
+    closeOverride();
   }
   async function undoCI(guest){
     const updated=checkins.filter(c=>!(c.guestId===guest.id&&c.day===config.currentDay));
@@ -217,8 +256,14 @@ function App() {
   }
 
   function exportCSV(day){
-    const rows=checkins.filter(c=>day==="all"||c.day===day).map(c=>`"${c.guestName}",Day ${c.day},"${new Date(c.timestamp).toLocaleString()}"`);
-    const blob=new Blob([["Name,Day,Time\n",...rows.map(r=>r+"\n")].join("")],{type:"text/csv"});
+    const reasonLabel={spouse:"Spouse/Family",oversight:"Approved by Oversight"};
+    const rows=checkins.filter(c=>day==="all"||c.day===day).map(c=>{
+      const ovr=c.override?"OVERRIDE":"";
+      const rsn=c.override?(reasonLabel[c.overrideReason]||c.overrideReason||""):"";
+      const by=c.override?(c.overrideBy==="super"?"Super Admin":"Overseer"):"";
+      return `"${c.guestName}",Day ${c.day},"${new Date(c.timestamp).toLocaleString()}","${ovr}","${rsn}","${by}"`;
+    });
+    const blob=new Blob([["Name,Day,Time,Override,Reason,Approved By\n",...rows.map(r=>r+"\n")].join("")],{type:"text/csv"});
     const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
     a.download=day==="all"?"all-checkins.csv":`day${day}-checkins.csv`; a.click();
   }
@@ -363,12 +408,12 @@ function App() {
               ?<div style={{textAlign:"center",color:C.hint,padding:"32px 0",fontFamily:"monospace",fontSize:13}}>No check-ins yet</div>
               :<div style={{display:"flex",flexDirection:"column",gap:6}}>
                 {recentToday.map((c,i)=>(
-                  <div key={c.id||i} style={S.card({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 14px"})}>
+                  <div key={c.id||i} style={S.card({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 14px",borderColor:c.override?C.orangeBdr:C.bdr})}>
                     <div>
-                      <div style={{fontWeight:600,fontSize:15}}>{c.guestName}</div>
+                      <div style={{fontWeight:600,fontSize:15}}>{c.guestName}{c.override&&<span style={{marginLeft:8,fontSize:9,color:C.orange,fontFamily:"monospace",letterSpacing:1,background:C.orangeDim,border:`1px solid ${C.orangeBdr}`,borderRadius:5,padding:"2px 6px",verticalAlign:"middle"}}>OVR · {c.overrideReason==="spouse"?"FAMILY":"OVERSIGHT"}</span>}</div>
                       <div style={{fontSize:11,color:C.muted,fontFamily:"monospace"}}>{new Date(c.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</div>
                     </div>
-                    <span style={{color:C.green,fontSize:20,fontWeight:700}}>✓</span>
+                    <span style={{color:c.override?C.orange:C.green,fontSize:20,fontWeight:700}}>{c.override?"⚠":"✓"}</span>
                   </div>
                 ))}
               </div>
@@ -616,22 +661,28 @@ function App() {
               })}
             </div>
             {status==="denied"&&(
-              <div style={{background:"#3d0f1a",borderRadius:12,padding:14,textAlign:"center"}}>
-                <div style={{color:C.red,fontSize:20,fontWeight:700,letterSpacing:1}}>⛔ NOT AUTHORIZED</div>
-                <div style={{color:"#ffaaaa",fontSize:13,marginTop:4}}>No access for Day {config.currentDay}</div>
+              <div>
+                <div style={{background:"#3d0f1a",borderRadius:12,padding:14,textAlign:"center",marginBottom:10}}>
+                  <div style={{color:C.red,fontSize:20,fontWeight:700,letterSpacing:1}}>⛔ NOT AUTHORIZED</div>
+                  <div style={{color:"#ffaaaa",fontSize:13,marginTop:4}}>No access for Day {config.currentDay}</div>
+                </div>
+                <button onClick={openOverride} style={{...S.btn(C.orange,"#000"),fontSize:15,padding:14,borderRadius:12,letterSpacing:1}}>
+                  🔓  OVERRIDE  —  OVERSEER ONLY
+                </button>
+                <div style={{fontSize:11,color:C.muted,textAlign:"center",marginTop:6,fontFamily:"monospace",letterSpacing:1}}>Requires Overseer or Super Admin PIN</div>
               </div>
             )}
             {status==="justdone"&&(
               <div style={{background:"#004d28",border:`1px solid ${C.green}`,borderRadius:12,padding:16,textAlign:"center"}}>
                 <div style={{color:C.green,fontSize:26,fontWeight:700,letterSpacing:1}}>✅ LET THEM THROUGH</div>
-                <div style={{color:"#88ffbb",fontSize:13,marginTop:6}}>{selected.isVIP?"VIP — authorized all day":"Checked in just now"}</div>
+                <div style={{color:"#88ffbb",fontSize:13,marginTop:6}}>{ci?.override?`⚠ OVERRIDE — ${ci.overrideReason==="spouse"?"Spouse/Family":"Approved by Oversight"}`:(selected.isVIP?"VIP — authorized all day":"Checked in just now")}</div>
               </div>
             )}
             {status==="alreadyin"&&(
               <div>
                 <div style={{background:"#004d28",border:`1px solid ${C.green}`,borderRadius:12,padding:16,textAlign:"center",marginBottom:8}}>
                   <div style={{color:C.green,fontSize:26,fontWeight:700,letterSpacing:1}}>✅ LET THEM THROUGH</div>
-                  <div style={{color:"#88ffbb",fontSize:13,marginTop:6}}>{selected.isVIP?"VIP — authorized all day":`Checked in at ${new Date(ci.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}`}</div>
+                  <div style={{color:"#88ffbb",fontSize:13,marginTop:6}}>{ci?.override?`⚠ OVERRIDE — ${ci.overrideReason==="spouse"?"Spouse/Family":"Approved by Oversight"} · ${new Date(ci.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}`:(selected.isVIP?"VIP — authorized all day":`Checked in at ${new Date(ci.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}`)}</div>
                 </div>
                 <button style={{...S.ghost(),width:"100%",fontSize:12}} onClick={()=>undoCI(selected)}>Undo check-in</button>
               </div>
@@ -688,6 +739,50 @@ function App() {
       <div style={{padding:"8px 16px",display:"flex",justifyContent:"flex-end",borderTop:`1px solid ${C.hint}22`}}>
         <button onClick={()=>setScreen("admin")} style={{background:"none",border:"none",color:C.hint,fontSize:11,cursor:"pointer",fontFamily:"monospace",letterSpacing:1}}>⚙ ADMIN</button>
       </div>
+
+      {ovrOpen&&selected&&(
+        <div onClick={closeOverride} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",padding:16,zIndex:1000}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:C.surface,border:`2px solid ${C.orangeBdr}`,borderRadius:16,padding:20,width:"100%",maxWidth:380,position:"relative"}}>
+            <button onClick={closeOverride} style={{position:"absolute",top:10,right:14,background:"none",border:"none",color:C.muted,fontSize:26,cursor:"pointer",lineHeight:1}}>×</button>
+            <div style={{fontSize:11,color:C.orange,letterSpacing:2,fontFamily:"monospace",marginBottom:6}}>🔓 OVERRIDE CHECK-IN</div>
+            <div style={{fontSize:18,fontWeight:700,marginBottom:4}}>{selected.name}</div>
+            <div style={{fontSize:12,color:C.muted,marginBottom:18}}>No access for Day {config.currentDay} — overseer approval needed</div>
+
+            {ovrStep==="pin"&&(
+              <div>
+                <div style={S.label}>Overseer or Super Admin PIN</div>
+                <input type="password" autoFocus placeholder="••••"
+                  style={S.input({textAlign:"center",fontSize:24,letterSpacing:8,borderColor:ovrPinErr?C.red:C.bdrUp})}
+                  value={ovrPin} onChange={e=>{setOvrPin(e.target.value);setOvrPinErr(false);}}
+                  onKeyDown={e=>{if(e.key==="Enter")submitOvrPin();}} />
+                {ovrPinErr&&<div style={{color:C.red,fontSize:12,fontFamily:"monospace",marginBottom:10,marginTop:-4}}>INCORRECT PIN</div>}
+                <div style={{display:"flex",gap:10,marginTop:6}}>
+                  <button style={{...S.ghost(),flex:1}} onClick={closeOverride}>Cancel</button>
+                  <button style={{...S.btn(C.orange,"#000"),flex:1}} onClick={submitOvrPin} disabled={!ovrPin}>Continue →</button>
+                </div>
+              </div>
+            )}
+
+            {ovrStep==="reason"&&(
+              <div>
+                <div style={{display:"inline-block",background:C.greenDim,border:`1px solid ${C.greenBdr}`,borderRadius:6,padding:"3px 10px",marginBottom:14}}>
+                  <span style={{color:C.green,fontSize:10,letterSpacing:2,fontFamily:"monospace"}}>✓ {ovrRole==="super"?"SUPER ADMIN":"OVERSEER"} VERIFIED</span>
+                </div>
+                <div style={S.label}>Reason for override</div>
+                <button onClick={()=>overrideCheckIn(selected,"spouse")}
+                  style={{...S.btn(C.surfaceUp,C.text),textAlign:"left",padding:"14px 16px",marginBottom:8,border:`1px solid ${C.bdrUp}`,borderRadius:12,letterSpacing:0,fontSize:14}}>
+                  👨‍👩‍👧 &nbsp;Spouse or Family Member
+                </button>
+                <button onClick={()=>overrideCheckIn(selected,"oversight")}
+                  style={{...S.btn(C.surfaceUp,C.text),textAlign:"left",padding:"14px 16px",marginBottom:14,border:`1px solid ${C.bdrUp}`,borderRadius:12,letterSpacing:0,fontSize:14}}>
+                  ✅ &nbsp;Approved by Oversight
+                </button>
+                <button style={{...S.ghost(),width:"100%"}} onClick={closeOverride}>Cancel</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
