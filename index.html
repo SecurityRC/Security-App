@@ -247,6 +247,13 @@ function App() {
     const updated=guests.map(g=>g.id===guest.id?{...g,[type]:arr}:g);
     await fbSet('guests',updated);
   }
+  async function toggleDayAccess(guest, day){
+    if(guest.isVIP)return; // VIPs always have all days
+    const cur=Array.isArray(guest.days)?guest.days:[];
+    const next=cur.includes(day)?cur.filter(d=>d!==day):[...cur,day].sort();
+    const updated=guests.map(g=>g.id===guest.id?{...g,days:next}:g);
+    await fbSet('guests',updated);
+  }
 
   async function finishSetup(){
     if(!sName.trim()||!sPin)return;
@@ -477,7 +484,7 @@ function App() {
             </div>
             {role==="super"&&<div style={{marginTop:14}}>
               <div style={{fontSize:10,color:C.muted,letterSpacing:2,fontFamily:"monospace",marginBottom:8}}>GUEST ACCESS EDITOR</div>
-              <div style={{fontSize:11,color:C.hint,marginBottom:10}}>Tap a guest to toggle backstage / early morning access per day.</div>
+              <div style={{fontSize:11,color:C.hint,marginBottom:10}}>Tap a guest to toggle Day access, Backstage, and Early morning per day.</div>
               {guests.length===0&&<div style={{textAlign:"center",color:C.hint,padding:"20px 0",fontFamily:"monospace",fontSize:12}}>No guests loaded</div>}
               {guests.map(g=>{
                 const isExp=expandedGuest===g.id;
@@ -512,7 +519,11 @@ function App() {
                             const hasEA=g.early&&g.early[di];
                             return(
                               <div key={di} style={{background:C.surface,borderRadius:10,padding:"10px 8px",border:`1px solid ${C.bdr}`}}>
-                                <div style={{fontSize:10,color:hasDay?C.blue:C.hint,fontFamily:"monospace",letterSpacing:1,marginBottom:8,textAlign:"center"}}>DAY {di+1}{!hasDay&&" (no access)"}</div>
+                                <button onClick={()=>toggleDayAccess(g,di+1)} disabled={g.isVIP}
+                                  title={g.isVIP?"VIP — all days locked on":"Tap to toggle Day access"}
+                                  style={{width:"100%",padding:"7px 4px",borderRadius:7,border:`2px solid ${hasDay?(g.isVIP?C.goldBdr:C.greenBdr):C.bdr}`,background:hasDay?(g.isVIP?C.goldDim:C.greenDim):"#1a1a30",color:hasDay?(g.isVIP?C.gold:C.green):C.hint,fontSize:11,fontWeight:700,cursor:g.isVIP?"default":"pointer",fontFamily:"monospace",letterSpacing:1,marginBottom:8,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+                                  {g.isVIP?"⭐ ":""}DAY {di+1} {hasDay?"✓":"✗"}
+                                </button>
                                 <button onClick={()=>toggleAccess(g,"backstage",di)}
                                   style={{width:"100%",padding:"8px 4px",borderRadius:8,border:`2px solid ${hasBS?"#aa44ff":"#3a3a6a"}`,background:hasBS?"#1a0a2e":C.surface,color:hasBS?"#cc88ff":C.hint,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",letterSpacing:.5,marginBottom:6,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
                                   <span>🎭</span>{hasBS?"BACKSTAGE ✓":"BACKSTAGE"}
