@@ -113,6 +113,7 @@ function App() {
   const [mVIP,setMVIP]=useState(false);
   const [mAdded,setMAdded]=useState(false);
   const [gMsg,setGMsg]=useState("");
+  const [expandedGuest,setExpandedGuest]=useState(null);
 
   const [sName,setSName]=useState("");
   const [sPin,setSPin]=useState("");
@@ -194,6 +195,13 @@ function App() {
 
   async function saveConfig(updates){
     const nc={...config,...updates}; setConfig(nc); await fbSet('config',nc);
+  }
+
+  async function toggleAccess(guest, type, dayIdx){
+    const arr=[...(guest[type]||[false,false,false])];
+    arr[dayIdx]=!arr[dayIdx];
+    const updated=guests.map(g=>g.id===guest.id?{...g,[type]:arr}:g);
+    await fbSet('guests',updated);
   }
 
   async function finishSetup(){
@@ -377,7 +385,7 @@ function App() {
                 {mAdded?"✓ Added!":"+ Add Guest"}
               </button>
             </div>
-            <div style={S.card()}>
+            <div style={S.card({marginBottom:14})}>
               <div style={{fontSize:10,color:C.muted,letterSpacing:2,fontFamily:"monospace",marginBottom:10}}>BREAKDOWN</div>
               {[1,2,3].map(d=>{
                 const eli=guests.filter(g=>hasAccess(g,d)).length;
@@ -391,6 +399,62 @@ function App() {
                 <span style={{color:C.gold,fontSize:14}}>⭐ VIPs</span>
                 <span style={{color:C.gold,fontFamily:"monospace",fontSize:14}}>{guests.filter(g=>g.isVIP).length}</span>
               </div>
+            </div>
+            <div style={{marginTop:14}}>
+              <div style={{fontSize:10,color:C.muted,letterSpacing:2,fontFamily:"monospace",marginBottom:8}}>GUEST ACCESS EDITOR</div>
+              <div style={{fontSize:11,color:C.hint,marginBottom:10}}>Tap a guest to toggle backstage / early morning access per day.</div>
+              {guests.length===0&&<div style={{textAlign:"center",color:C.hint,padding:"20px 0",fontFamily:"monospace",fontSize:12}}>No guests loaded</div>}
+              {guests.map(g=>{
+                const isExp=expandedGuest===g.id;
+                return(
+                  <div key={g.id} style={{marginBottom:8}}>
+                    <button onClick={()=>setExpandedGuest(isExp?null:g.id)}
+                      style={{width:"100%",textAlign:"left",background:isExp?C.surfaceUp:C.surface,border:`1px solid ${isExp?C.bdrUp:C.bdr}`,borderRadius:isExp?"12px 12px 0 0":12,padding:"10px 14px",cursor:"pointer",fontFamily:"inherit",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div>
+                        <span style={{color:C.text,fontWeight:600,fontSize:14}}>{g.name}</span>
+                        {g.isVIP&&<span style={{marginLeft:8,fontSize:10,color:C.gold,fontFamily:"monospace"}}>VIP</span>}
+                        <div style={{display:"flex",gap:5,marginTop:4}}>
+                          {[0,1,2].map(di=>{
+                            const hasBS=g.backstage&&g.backstage[di];
+                            const hasEA=g.early&&g.early[di];
+                            if(!hasBS&&!hasEA)return null;
+                            return(
+                              <span key={di} style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:C.surfaceUp,color:C.muted,fontFamily:"monospace"}}>
+                                D{di+1}{hasBS?"🎭":""}{hasEA?"🌅":""}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <span style={{color:C.muted,fontSize:16}}>{isExp?"▲":"▼"}</span>
+                    </button>
+                    {isExp&&(
+                      <div style={{background:C.surfaceUp,border:`1px solid ${C.bdrUp}`,borderTop:"none",borderRadius:"0 0 12px 12px",padding:"10px 14px"}}>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+                          {[0,1,2].map(di=>{
+                            const hasDay=g.isVIP||(Array.isArray(g.days)&&g.days.includes(di+1));
+                            const hasBS=g.backstage&&g.backstage[di];
+                            const hasEA=g.early&&g.early[di];
+                            return(
+                              <div key={di} style={{background:C.surface,borderRadius:10,padding:"10px 8px",border:`1px solid ${C.bdr}`}}>
+                                <div style={{fontSize:10,color:hasDay?C.blue:C.hint,fontFamily:"monospace",letterSpacing:1,marginBottom:8,textAlign:"center"}}>DAY {di+1}{!hasDay?" (no access)":""}</div>
+                                <button onClick={()=>toggleAccess(g,"backstage",di)}
+                                  style={{width:"100%",padding:"8px 4px",borderRadius:8,border:`2px solid ${hasBS?"#aa44ff":"#3a3a6a"}`,background:hasBS?"#1a0a2e":C.surface,color:hasBS?"#cc88ff":C.hint,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",letterSpacing:.5,marginBottom:6,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+                                  <span>🎭</span>{hasBS?"BACKSTAGE ✓":"BACKSTAGE"}
+                                </button>
+                                <button onClick={()=>toggleAccess(g,"early",di)}
+                                  style={{width:"100%",padding:"8px 4px",borderRadius:8,border:`2px solid ${hasEA?"#44aaff":"#3a3a6a"}`,background:hasEA?"#0a1a2e":C.surface,color:hasEA?"#88ccff":C.hint,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",letterSpacing:.5,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+                                  <span>🌅</span>{hasEA?"EARLY ✓":"EARLY"}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>}
 
