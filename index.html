@@ -53,6 +53,7 @@ const db = firebase.database();
 const ROOT = 'secapp';
 
 function fbSet(path, val) { return db.ref(ROOT+'/'+path).set(val); }
+function fbUpdate(path, partial) { return db.ref(ROOT+'/'+path).update(partial); }
 function fbListen(path, cb) {
   const ref = db.ref(ROOT+'/'+path);
   ref.on('value', s => cb(s.val()));
@@ -120,6 +121,8 @@ function App() {
   const [sDay,setSDay]=useState(1);
 
   const csvRef=useRef(), aCsvRef=useRef(), searchRef=useRef();
+  const configRef=useRef(config);
+  useEffect(()=>{ configRef.current=config; },[config]);
 
   useEffect(()=>{
     const link=document.createElement("link");
@@ -131,10 +134,13 @@ function App() {
     window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); setInstallPrompt(e); });
 
     let firstLoad=false;
-    const mark=(cfg)=>{ if(firstLoad)return; firstLoad=true; setReady(true); if(!cfg?.setupDone)setScreen("setup"); else setTimeout(()=>searchRef.current?.focus(),200); };
+    // BUG FIX: timeout used to force "setup" screen if Firebase didn't respond
+    // in 5s, which on slow connections caused the setup wizard to appear and
+    // overwrite the admin PIN. Now timeout only marks ready without forcing setup.
+    const mark=(cfg)=>{ if(firstLoad)return; firstLoad=true; setReady(true); if(cfg&&!cfg.setupDone)setScreen("setup"); else setTimeout(()=>searchRef.current?.focus(),200); };
     const unG=fbListen('guests',d=>setGuests(Array.isArray(d)?d:d?Object.values(d):[]));
     const unC=fbListen('checkins',d=>setCheckins(Array.isArray(d)?d:d?Object.values(d):[]));
-    const unCfg=fbListen('config',d=>{ if(d)setConfig(d); mark(d); });
+    const unCfg=fbListen('config',d=>{ if(d){setConfig(d); configRef.current=d;} mark(d); });
     const t=setTimeout(()=>mark(null),5000);
     return()=>{ unG();unC();unCfg();clearTimeout(t); };
   },[]);
@@ -176,37 +182,85 @@ function App() {
           ok(row.Early2??row.early2??row["Early 2"]),
           ok(row.Early3??row.early3??row["Early 3"]),
         ];
-        return{id:`g-${i}-${Math.random().toString(36).slice(2,9)}`,name,days,isVIP:ok(row.VIP??row.vip),backstage,early,notes:(row.Notes??row.notes??"").trim()};
+        return{id:`g-${Date.now()}-${i}-${Math.random().toString(36).slice(2,9)}`,
+               name,days,isVIP:ok(row.VIP??row.vip),backstage,early,
+               notes:(row.Notes??row.notes??"").trim()};
       }).filter(Boolean);
-      const updated=[...(append?guests:[]),...parsed];
-      await fbSet('guests',updated);
-      setGMsg(`✓ ${parsed.length} guests loaded`);
-      setTimeout(()=>setGMsg(""),3000);
+
+      // BUG FIX: chunked upload by guest ID instead of one big array .set().
+      // The previous approach wrote the entire 273-guest array in one operation,
+      // which was unreliable: sometimes only 224 of 273 appeared in the app.
+      // Now we clear (or merge) and write in batches of 50 using update().
+      try {
+        setGMsg(`Uploading 0/${parsed.length}...`);
+        if(!append){
+          // Replace mode: clear existing guests first
+          await fbSet('guests',null);
+        }
+        const BATCH=50;
+        for(let i=0;i<parsed.length;i+=BATCH){
+          const chunk=parsed.slice(i,i+BATCH);
+          const updates={};
+          chunk.forEach(g=>{ updates[g.id]=g; });
+          await fbUpdate('guests',updates);
+          setGMsg(`Uploading ${Math.min(i+BATCH,parsed.length)}/${parsed.length}...`);
+        }
+        // Verify count matches after a brief delay so listener has time to sync
+        setTimeout(()=>{
+          const expected=append?(guests.length+parsed.length):parsed.length;
+          const actual=guests.length;
+          if(actual<expected-2){ // small tolerance for listener race
+            setGMsg(`⚠️ Loaded ${actual} of ${expected} - try again or check Firebase`);
+          } else {
+            setGMsg(`✓ ${parsed.length} guests loaded`);
+          }
+          setTimeout(()=>setGMsg(""),4000);
+        },1500);
+      } catch(err) {
+        setGMsg(`❌ Upload failed: ${err.message||err}`);
+        setTimeout(()=>setGMsg(""),5000);
+      }
     }});
   }
 
   async function addManual(){
     if(!mName.trim())return;
-    const g={id:`g-${Date.now()}`,name:mName.trim(),days:mDays,isVIP:mVIP,notes:""};
-    await fbSet('guests',[...guests,g]);
+    const g={id:`g-${Date.now()}-${Math.random().toString(36).slice(2,9)}`,name:mName.trim(),days:mDays,isVIP:mVIP,backstage:[false,false,false],early:[false,false,false],notes:""};
+    // BUG FIX: write by ID key, not array overwrite, so we don't wipe other guests.
+    await fbUpdate('guests',{[g.id]:g});
     setMName("");setMDays([]);setMVIP(false);
     setMAdded(true);setTimeout(()=>setMAdded(false),2000);
   }
 
   async function saveConfig(updates){
-    const nc={...config,...updates}; setConfig(nc); await fbSet('config',nc);
+    // BUG FIX: Use fbUpdate (partial write) instead of fbSet (full overwrite).
+    // Using set() risked overwriting fields like adminPin with stale local state.
+    // Also use configRef to ensure we merge against latest config, not closure.
+    const nc={...configRef.current,...updates};
+    configRef.current=nc;
+    setConfig(nc);
+    await fbUpdate('config',updates);
   }
 
   async function toggleAccess(guest, type, dayIdx){
     const arr=[...(guest[type]||[false,false,false])];
     arr[dayIdx]=!arr[dayIdx];
-    const updated=guests.map(g=>g.id===guest.id?{...g,[type]:arr}:g);
-    await fbSet('guests',updated);
+    // BUG FIX: update only this guest by ID, not whole array overwrite.
+    await fbUpdate('guests',{[guest.id]:{...guest,[type]:arr}});
   }
 
   async function finishSetup(){
     if(!sName.trim()||!sPin)return;
-    const nc={...config,adminPin:sPin,eventName:sName.trim(),currentDay:sDay,setupDone:true};
+    // BUG FIX: refuse to overwrite an already-completed setup. Previously, if the
+    // setup screen appeared incorrectly (e.g. slow Firebase load), completing it
+    // would overwrite the admin PIN with whatever was entered.
+    if(configRef.current?.setupDone){
+      alert("Setup is already complete. Returning to app.");
+      setScreen("guard");
+      return;
+    }
+    const nc={...configRef.current,adminPin:sPin,eventName:sName.trim(),currentDay:sDay,setupDone:true};
+    configRef.current=nc;
     setConfig(nc); await fbSet('config',nc); setScreen("guard");
     setTimeout(()=>searchRef.current?.focus(),200);
   }
