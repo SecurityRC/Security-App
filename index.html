@@ -53,7 +53,9 @@ const db = firebase.database();
 const ROOT = 'secapp';
 
 function fbSet(path, val) { return db.ref(ROOT+'/'+path).set(val); }
-function fbUpdate(path, partial) { return db.ref(ROOT+'/'+path).update(partial); }
+function fbUpdate(path, val) { return db.ref(ROOT+'/'+path).update(val); }
+function fbRemove(path) { return db.ref(ROOT+'/'+path).remove(); }
+function fbRef(path) { return db.ref(ROOT+'/'+path); }
 function fbListen(path, cb) {
   const ref = db.ref(ROOT+'/'+path);
   ref.on('value', s => cb(s.val()));
@@ -114,15 +116,12 @@ function App() {
   const [mVIP,setMVIP]=useState(false);
   const [mAdded,setMAdded]=useState(false);
   const [gMsg,setGMsg]=useState("");
-  const [expandedGuest,setExpandedGuest]=useState(null);
 
   const [sName,setSName]=useState("");
   const [sPin,setSPin]=useState("");
   const [sDay,setSDay]=useState(1);
 
   const csvRef=useRef(), aCsvRef=useRef(), searchRef=useRef();
-  const configRef=useRef(config);
-  useEffect(()=>{ configRef.current=config; },[config]);
 
   useEffect(()=>{
     const link=document.createElement("link");
@@ -133,14 +132,22 @@ function App() {
     // Capture install prompt for Android
     window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); setInstallPrompt(e); });
 
+    // Restore last-known-good config immediately so a slow/failed read can NEVER reset the PIN or force setup
+    let cached=null;
+    try{ cached=JSON.parse(localStorage.getItem('secapp_config')||'null'); }catch(e){}
+    if(cached&&cached.setupDone){ setConfig(cached); }
+
     let firstLoad=false;
-    // BUG FIX: timeout used to force "setup" screen if Firebase didn't respond
-    // in 5s, which on slow connections caused the setup wizard to appear and
-    // overwrite the admin PIN. Now timeout only marks ready without forcing setup.
-    const mark=(cfg)=>{ if(firstLoad)return; firstLoad=true; setReady(true); if(cfg&&!cfg.setupDone)setScreen("setup"); else setTimeout(()=>searchRef.current?.focus(),200); };
+    const mark=(cfg)=>{ if(firstLoad)return; firstLoad=true; setReady(true);
+      const eff=(cfg&&cfg.setupDone)?cfg:(cached&&cached.setupDone?cached:cfg);
+      if(!eff?.setupDone)setScreen("setup"); else setTimeout(()=>searchRef.current?.focus(),200); };
     const unG=fbListen('guests',d=>setGuests(Array.isArray(d)?d:d?Object.values(d):[]));
     const unC=fbListen('checkins',d=>setCheckins(Array.isArray(d)?d:d?Object.values(d):[]));
-    const unCfg=fbListen('config',d=>{ if(d){setConfig(d); configRef.current=d;} mark(d); });
+    const unCfg=fbListen('config',d=>{
+      if(d&&d.setupDone){ setConfig(d); try{localStorage.setItem('secapp_config',JSON.stringify(d));}catch(e){} }
+      else if(d){ setConfig(c=>({...c,...d})); }
+      mark(d);
+    });
     const t=setTimeout(()=>mark(null),5000);
     return()=>{ unG();unC();unCfg();clearTimeout(t); };
   },[]);
@@ -152,13 +159,22 @@ function App() {
 
   async function checkIn(guest){
     const entry={id:`ci-${Date.now()}`,guestId:guest.id,guestName:guest.name,day:config.currentDay,timestamp:new Date().toISOString()};
-    const updated=[...checkins,entry];
-    setCheckins(updated); await fbSet('checkins',updated);
-    setFlash(true); setTimeout(()=>setFlash(false),1400);
+    // Write ONE keyed record — never rewrite the whole array (prevents bandwidth storm + races)
+    setCheckins(c=>[...c,entry]);
+    setJustCheckedIn(guest.id); setTimeout(()=>setJustCheckedIn(null),1400);
+    try{ await fbRef('checkins/'+entry.id).set(entry); }
+    catch(e){ /* listener will reconcile */ }
   }
   async function undoCI(guest){
-    const updated=checkins.filter(c=>!(c.guestId===guest.id&&c.day===config.currentDay));
-    setCheckins(updated); await fbSet('checkins',updated);
+    // Remove only the matching record(s) by their real Firebase key — no whole-array rewrite
+    const matches=checkins.filter(c=>c.guestId===guest.id&&c.day===config.currentDay);
+    setCheckins(c=>c.filter(x=>!(x.guestId===guest.id&&x.day===config.currentDay)));
+    try{
+      const snap=await fbRef('checkins').once('value');
+      const updates={};
+      snap.forEach(ch=>{ const v=ch.val(); if(v&&v.guestId===guest.id&&v.day===config.currentDay) updates[ch.key]=null; });
+      if(Object.keys(updates).length) await fbUpdate('checkins',updates);
+    }catch(e){}
   }
 
   function parseCSV(file,append){
@@ -172,96 +188,35 @@ function App() {
         if(ok(row.Day1??row.day1??row["Day 1"]))days.push(1);
         if(ok(row.Day2??row.day2??row["Day 2"]))days.push(2);
         if(ok(row.Day3??row.day3??row["Day 3"]))days.push(3);
-        const backstage=[
-          ok(row.Backstage1??row.backstage1??row["Backstage 1"]),
-          ok(row.Backstage2??row.backstage2??row["Backstage 2"]),
-          ok(row.Backstage3??row.backstage3??row["Backstage 3"]),
-        ];
-        const early=[
-          ok(row.Early1??row.early1??row["Early 1"]),
-          ok(row.Early2??row.early2??row["Early 2"]),
-          ok(row.Early3??row.early3??row["Early 3"]),
-        ];
-        return{id:`g-${Date.now()}-${i}-${Math.random().toString(36).slice(2,9)}`,
-               name,days,isVIP:ok(row.VIP??row.vip),backstage,early,
-               notes:(row.Notes??row.notes??"").trim()};
+        return{id:`g-${Date.now()}-${i}`,name,days,isVIP:ok(row.VIP??row.vip),notes:(row.Notes??row.notes??"").trim()};
       }).filter(Boolean);
-
-      // BUG FIX: chunked upload by guest ID instead of one big array .set().
-      // The previous approach wrote the entire 273-guest array in one operation,
-      // which was unreliable: sometimes only 224 of 273 appeared in the app.
-      // Now we clear (or merge) and write in batches of 50 using update().
-      try {
-        setGMsg(`Uploading 0/${parsed.length}...`);
-        if(!append){
-          // Replace mode: clear existing guests first
-          await fbSet('guests',null);
-        }
-        const BATCH=50;
-        for(let i=0;i<parsed.length;i+=BATCH){
-          const chunk=parsed.slice(i,i+BATCH);
-          const updates={};
-          chunk.forEach(g=>{ updates[g.id]=g; });
-          await fbUpdate('guests',updates);
-          setGMsg(`Uploading ${Math.min(i+BATCH,parsed.length)}/${parsed.length}...`);
-        }
-        // Verify count matches after a brief delay so listener has time to sync
-        setTimeout(()=>{
-          const expected=append?(guests.length+parsed.length):parsed.length;
-          const actual=guests.length;
-          if(actual<expected-2){ // small tolerance for listener race
-            setGMsg(`⚠️ Loaded ${actual} of ${expected} - try again or check Firebase`);
-          } else {
-            setGMsg(`✓ ${parsed.length} guests loaded`);
-          }
-          setTimeout(()=>setGMsg(""),4000);
-        },1500);
-      } catch(err) {
-        setGMsg(`❌ Upload failed: ${err.message||err}`);
-        setTimeout(()=>setGMsg(""),5000);
-      }
+      const updated=[...(append?guests:[]),...parsed];
+      await fbSet('guests',updated);
+      setGMsg(`✓ ${parsed.length} guests loaded`);
+      setTimeout(()=>setGMsg(""),3000);
     }});
   }
 
   async function addManual(){
     if(!mName.trim())return;
-    const g={id:`g-${Date.now()}-${Math.random().toString(36).slice(2,9)}`,name:mName.trim(),days:mDays,isVIP:mVIP,backstage:[false,false,false],early:[false,false,false],notes:""};
-    // BUG FIX: write by ID key, not array overwrite, so we don't wipe other guests.
-    await fbUpdate('guests',{[g.id]:g});
+    const g={id:`g-${Date.now()}`,name:mName.trim(),days:mDays,isVIP:mVIP,notes:""};
+    await fbSet('guests',[...guests,g]);
     setMName("");setMDays([]);setMVIP(false);
     setMAdded(true);setTimeout(()=>setMAdded(false),2000);
   }
 
   async function saveConfig(updates){
-    // BUG FIX: Use fbUpdate (partial write) instead of fbSet (full overwrite).
-    // Using set() risked overwriting fields like adminPin with stale local state.
-    // Also use configRef to ensure we merge against latest config, not closure.
-    const nc={...configRef.current,...updates};
-    configRef.current=nc;
-    setConfig(nc);
+    const nc={...config,...updates}; setConfig(nc);
+    try{ localStorage.setItem('secapp_config',JSON.stringify(nc)); }catch(e){}
     await fbUpdate('config',updates);
-  }
-
-  async function toggleAccess(guest, type, dayIdx){
-    const arr=[...(guest[type]||[false,false,false])];
-    arr[dayIdx]=!arr[dayIdx];
-    // BUG FIX: update only this guest by ID, not whole array overwrite.
-    await fbUpdate('guests',{[guest.id]:{...guest,[type]:arr}});
   }
 
   async function finishSetup(){
     if(!sName.trim()||!sPin)return;
-    // BUG FIX: refuse to overwrite an already-completed setup. Previously, if the
-    // setup screen appeared incorrectly (e.g. slow Firebase load), completing it
-    // would overwrite the admin PIN with whatever was entered.
-    if(configRef.current?.setupDone){
-      alert("Setup is already complete. Returning to app.");
-      setScreen("guard");
-      return;
-    }
-    const nc={...configRef.current,adminPin:sPin,eventName:sName.trim(),currentDay:sDay,setupDone:true};
-    configRef.current=nc;
-    setConfig(nc); await fbSet('config',nc); setScreen("guard");
+    const updates={adminPin:sPin,eventName:sName.trim(),currentDay:sDay,setupDone:true};
+    const nc={...config,...updates}; setConfig(nc);
+    try{ localStorage.setItem('secapp_config',JSON.stringify(nc)); }catch(e){}
+    await fbUpdate('config',updates); setScreen("guard");
     setTimeout(()=>searchRef.current?.focus(),200);
   }
 
@@ -439,7 +394,7 @@ function App() {
                 {mAdded?"✓ Added!":"+ Add Guest"}
               </button>
             </div>
-            <div style={S.card({marginBottom:14})}>
+            <div style={S.card()}>
               <div style={{fontSize:10,color:C.muted,letterSpacing:2,fontFamily:"monospace",marginBottom:10}}>BREAKDOWN</div>
               {[1,2,3].map(d=>{
                 const eli=guests.filter(g=>hasAccess(g,d)).length;
@@ -453,62 +408,6 @@ function App() {
                 <span style={{color:C.gold,fontSize:14}}>⭐ VIPs</span>
                 <span style={{color:C.gold,fontFamily:"monospace",fontSize:14}}>{guests.filter(g=>g.isVIP).length}</span>
               </div>
-            </div>
-            <div style={{marginTop:14}}>
-              <div style={{fontSize:10,color:C.muted,letterSpacing:2,fontFamily:"monospace",marginBottom:8}}>GUEST ACCESS EDITOR</div>
-              <div style={{fontSize:11,color:C.hint,marginBottom:10}}>Tap a guest to toggle backstage / early morning access per day.</div>
-              {guests.length===0&&<div style={{textAlign:"center",color:C.hint,padding:"20px 0",fontFamily:"monospace",fontSize:12}}>No guests loaded</div>}
-              {guests.map(g=>{
-                const isExp=expandedGuest===g.id;
-                return(
-                  <div key={g.id} style={{marginBottom:8}}>
-                    <button onClick={()=>setExpandedGuest(isExp?null:g.id)}
-                      style={{width:"100%",textAlign:"left",background:isExp?C.surfaceUp:C.surface,border:`1px solid ${isExp?C.bdrUp:C.bdr}`,borderRadius:isExp?"12px 12px 0 0":12,padding:"10px 14px",cursor:"pointer",fontFamily:"inherit",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                      <div>
-                        <span style={{color:C.text,fontWeight:600,fontSize:14}}>{g.name}</span>
-                        {g.isVIP&&<span style={{marginLeft:8,fontSize:10,color:C.gold,fontFamily:"monospace"}}>VIP</span>}
-                        <div style={{display:"flex",gap:5,marginTop:4}}>
-                          {[0,1,2].map(di=>{
-                            const hasBS=g.backstage&&g.backstage[di];
-                            const hasEA=g.early&&g.early[di];
-                            if(!hasBS&&!hasEA)return null;
-                            return(
-                              <span key={di} style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:C.surfaceUp,color:C.muted,fontFamily:"monospace"}}>
-                                D{di+1}{hasBS?"🎭":""}{hasEA?"🌅":""}
-                              </span>
-                            );
-                          })}
-                        </div>
-                      </div>
-                      <span style={{color:C.muted,fontSize:16}}>{isExp?"▲":"▼"}</span>
-                    </button>
-                    {isExp&&(
-                      <div style={{background:C.surfaceUp,border:`1px solid ${C.bdrUp}`,borderTop:"none",borderRadius:"0 0 12px 12px",padding:"10px 14px"}}>
-                        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
-                          {[0,1,2].map(di=>{
-                            const hasDay=g.isVIP||(Array.isArray(g.days)&&g.days.includes(di+1));
-                            const hasBS=g.backstage&&g.backstage[di];
-                            const hasEA=g.early&&g.early[di];
-                            return(
-                              <div key={di} style={{background:C.surface,borderRadius:10,padding:"10px 8px",border:`1px solid ${C.bdr}`}}>
-                                <div style={{fontSize:10,color:hasDay?C.blue:C.hint,fontFamily:"monospace",letterSpacing:1,marginBottom:8,textAlign:"center"}}>DAY {di+1}{!hasDay?" (no access)":""}</div>
-                                <button onClick={()=>toggleAccess(g,"backstage",di)}
-                                  style={{width:"100%",padding:"8px 4px",borderRadius:8,border:`2px solid ${hasBS?"#aa44ff":"#3a3a6a"}`,background:hasBS?"#1a0a2e":C.surface,color:hasBS?"#cc88ff":C.hint,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",letterSpacing:.5,marginBottom:6,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
-                                  <span>🎭</span>{hasBS?"BACKSTAGE ✓":"BACKSTAGE"}
-                                </button>
-                                <button onClick={()=>toggleAccess(g,"early",di)}
-                                  style={{width:"100%",padding:"8px 4px",borderRadius:8,border:`2px solid ${hasEA?"#44aaff":"#3a3a6a"}`,background:hasEA?"#0a1a2e":C.surface,color:hasEA?"#88ccff":C.hint,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",letterSpacing:.5,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
-                                  <span>🌅</span>{hasEA?"EARLY ✓":"EARLY"}
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
             </div>
           </div>}
 
