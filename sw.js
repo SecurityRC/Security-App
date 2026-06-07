@@ -1,4 +1,4 @@
-const CACHE = 'checkin-v5';
+const CACHE = 'checkin-v6';
 const URLS = [
   './',
   './index.html',
